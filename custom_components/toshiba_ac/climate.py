@@ -104,8 +104,8 @@ class ToshibaClimate(ToshibaAcStateEntity, ClimateEntity):
             and self._device.ac_merit_a == ToshibaAcMeritA.HEATING_8C
         ):
             # upper limit for target temp
-            if set_temperature > 13:
-                set_temperature = 13
+            if set_temperature > 16:
+                set_temperature = 16
             # lower limit for target temp
             elif set_temperature < 5:
                 set_temperature = 5
@@ -254,7 +254,7 @@ class ToshibaClimate(ToshibaAcStateEntity, ClimateEntity):
             hasattr(self._device, "ac_merit_a")
             and self._device.ac_merit_a == ToshibaAcMeritA.HEATING_8C
         ):
-            return 13
+            return 16
         return 30
 
     @property
