@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 import logging
 from typing import Any
+import asyncio
+from aiohttp import ClientError
 
 from toshiba_ac.device import (
     ToshibaAcDevice,
@@ -24,7 +26,6 @@ from homeassistant.components.climate.const import (
     HVACMode,
 )
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
-from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import DOMAIN
 from .entity import ToshibaAcStateEntity
@@ -46,20 +47,46 @@ HVAC_MODE_TO_TOSHIBA = {v: k for k, v in TOSHIBA_TO_HVAC_MODE.items()}
 async def async_setup_entry(hass, config_entry, async_add_devices):
     """Add climate for passed config_entry in HA."""
     device_manager = hass.data[DOMAIN][config_entry.entry_id]
-    new_entities = []
 
-    try:
-        devices = await device_manager.get_devices()
-        for device in devices:
-            climate_entity = ToshibaClimate(device)
-            new_entities.append(climate_entity)
-    except Exception as ex:
-        _LOGGER.error("Error during connection to Toshiba server %s", ex)
-        raise ConfigEntryNotReady("Error during connection to Toshiba server") from ex
+    async def _run_setup():
+        backoff = [1, 3, 7, 30, 60, 300, 1800]
+        attempt = 0
+        while True:
+            try:
+                devices = await device_manager.get_devices()
+                entities = [ToshibaClimate(dev) for dev in devices]
+                if entities:
+                    _LOGGER.info("Adding %d climates", len(entities))
+                    async_add_devices(entities)
+                return
+            except Exception as ex:
+                wait = backoff[min(attempt, len(backoff) - 1)]
+                attempt += 1
+                _LOGGER.warning(
+                    "Toshiba AC: setup attempt %s failed: %r. Retrying in %s sec",
+                    attempt,
+                    ex,
+                    wait,
+                )
 
-    if new_entities:
-        _LOGGER.info("Adding %d %s", len(new_entities), "climates")
-        async_add_devices(new_entities)
+                # Try to reconnect on specific failures that might indicate token issues
+                if attempt == 1 and ("403" in str(ex) or "Forbidden" in str(ex) or "TimeoutError" in str(ex)):
+                    _LOGGER.info("Attempting to refresh connection due to potential token issue")
+                    try:
+                        await device_manager.connect()
+                        _LOGGER.info("Successfully refreshed connection")
+                        # Reset wait time for immediate retry after successful reconnect
+                        wait = 1
+                    except Exception as connect_ex:
+                        _LOGGER.warning("Failed to refresh connection: %r", connect_ex)
+
+                await asyncio.sleep(wait)
+
+    async def _start_setup_task():
+        task = hass.loop.create_task(_run_setup())
+        hass.data[DOMAIN][f"{config_entry.entry_id}_setup_task"] = task
+
+    await _start_setup_task()
 
 
 class ToshibaClimate(ToshibaAcStateEntity, ClimateEntity):
